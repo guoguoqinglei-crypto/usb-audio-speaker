@@ -13,6 +13,7 @@
 #include <i2s3.h>
 #endif
 #include <uart.h>
+#include <key.h>
 
 /* ============================================================================
  * USB 音频扬声器 —— 设备层与音频数据层
@@ -567,6 +568,111 @@ static void UsbAudio_MicTask(void)
 }
 #endif /* ENABLE_USB_MIC */
 
+#if ENABLE_AUDIO_STATUS_HID
+/* ============================================================================
+ * 厂商 HID 状态回传（与 UAC 功能相互独立）
+ * rep[0] bit0=A、bit1=B；rep[1]=板载音量；rep[2]=序号；
+ * rep[3] bit0=当前 UAC 静音；rep[4..7] 保留。
+ * 无 Report ID，Windows 读取缓冲区通常会在前面增加一个字节 0。
+ * ========================================================================== */
+static const uint8_t s_audioStatusReportDesc[] =
+{
+    0x06, 0x00, 0xFF,       /* Usage Page = 0xFF00（厂商自定义） */
+    0x09, 0x01,             /* Usage = 1 */
+    0xA1, 0x01,             /* Application Collection */
+    0x15, 0x00,             /* Logical Minimum = 0 */
+    0x26, 0xFF, 0x00,       /* Logical Maximum = 255 */
+    0x75, 0x08,             /* Report Size = 8 */
+    0x95, 0x08,             /* Report Count = 8 */
+    0x09, 0x01,
+    0x81, 0x02,             /* Input: Data, Variable, Absolute */
+    0xC0
+};
+TU_VERIFY_STATIC(sizeof(s_audioStatusReportDesc) == AUDIO_STATUS_REPORT_DESC_LEN,
+                 "audio status HID report descriptor length mismatch");
+
+static uint8_t s_statusKeyReported = 0xFFu;
+static uint8_t s_statusVolumeReported = 0xFFu;
+static uint8_t s_statusMuteReported = 0xFFu;
+static uint8_t s_statusSeq = 0u;
+static uint32_t s_statusBeatMs = 0u;
+
+uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance)
+{
+    (void)instance;
+    return s_audioStatusReportDesc;
+}
+
+static void UsbAudio_StatusReportTask(void)
+{
+    uint8_t rep[AUDIO_STATUS_REPORT_LEN] = { 0u };
+    uint8_t keys = 0u;
+    uint8_t volume = AudioKeys_GetVolume();
+    uint8_t mute = s_usb_mute;
+    uint8_t changed;
+
+    if (AudioKeys_IsDown(AUDIO_KEY_A) != 0u) { keys |= 0x01u; }
+    if (AudioKeys_IsDown(AUDIO_KEY_B) != 0u) { keys |= 0x02u; }
+
+    changed = ((keys != s_statusKeyReported) ||
+               (volume != s_statusVolumeReported) ||
+               (mute != s_statusMuteReported)) ? 1u : 0u;
+    if ((changed == 0u) && ((uint32_t)(s_millis - s_statusBeatMs) < 1000u))
+    {
+        return;                         /* 空闲 1 秒心跳，按键/音量变化立即发送 */
+    }
+    if (!tud_hid_ready())
+    {
+        return;                         /* 端点忙时保留缓存，下轮自动重试 */
+    }
+
+    rep[0] = keys;
+    rep[1] = volume;
+    rep[2] = s_statusSeq;
+    rep[3] = (uint8_t)(mute & 0x01u);
+    if (tud_hid_report(0u, rep, sizeof(rep)))
+    {
+        s_statusKeyReported = keys;
+        s_statusVolumeReported = volume;
+        s_statusMuteReported = mute;
+        s_statusSeq++;
+        s_statusBeatMs = s_millis;
+    }
+}
+
+uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id,
+                               hid_report_type_t report_type,
+                               uint8_t *buffer, uint16_t reqlen)
+{
+    (void)instance;
+    (void)report_id;
+    (void)report_type;
+    if (reqlen < AUDIO_STATUS_REPORT_LEN)
+    {
+        return 0u;
+    }
+    memset(buffer, 0, AUDIO_STATUS_REPORT_LEN);
+    buffer[0] = (uint8_t)((AudioKeys_IsDown(AUDIO_KEY_A) != 0u ? 0x01u : 0u) |
+                          (AudioKeys_IsDown(AUDIO_KEY_B) != 0u ? 0x02u : 0u));
+    buffer[1] = AudioKeys_GetVolume();
+    buffer[2] = s_statusSeq;
+    buffer[3] = (uint8_t)(s_usb_mute & 0x01u);
+    return AUDIO_STATUS_REPORT_LEN;
+}
+
+void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
+                           hid_report_type_t report_type,
+                           uint8_t const *buffer, uint16_t bufsize)
+{
+    /* IN-only 状态接口不接收输出报告；保留 TinyUSB 所需的空回调。 */
+    (void)instance;
+    (void)report_id;
+    (void)report_type;
+    (void)buffer;
+    (void)bufsize;
+}
+#endif
+
 void UsbAudio_Task(void)
 {
     /* 第 1 步：处理 USB 协议栈事件（枚举、类请求、等时传输） */
@@ -574,6 +680,11 @@ void UsbAudio_Task(void)
 
     /* 第 2 步：把收到的音频搬进环形缓冲 */
     UsbAudio_Pump();
+
+#if ENABLE_AUDIO_STATUS_HID
+    /* 厂商 HID 只负责状态显示；A/B 实际调节在 MUTE 任务中完成。 */
+    UsbAudio_StatusReportTask();
+#endif
 
     /* 音量与静音由 Windows 软件音频栈处理，不执行固件实体控制。 */
 #if ENABLE_USB_MIC

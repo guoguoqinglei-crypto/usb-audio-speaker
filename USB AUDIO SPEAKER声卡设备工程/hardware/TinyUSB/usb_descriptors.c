@@ -61,10 +61,10 @@ static const tusb_desc_device_t desc_device =
 
     .idVendor           = USB_VID,
     .idProduct          = USB_PID,
-    /* V1.3：播放 Feature Unit 仅保留主通道静音，不声明硬件音量。
-     * 播放端点使用标准 UAC1 拓扑，音量大小由 Windows 软件音频栈处理。
+    /* V1.4：增加 IN-only 厂商 HID，回传 A/B 与板载 Codec 音量。
+     * UAC Feature Unit 仍只声明主通道静音，Windows 软件音量保持不变。
      * 提升 bcdDevice 让 Windows 重新读取描述符，避免沿用旧版缓存。 */
-    .bcdDevice          = 0x0103,
+    .bcdDevice          = 0x0104,
 
     .iManufacturer      = 0x01,
     .iProduct           = 0x02,
@@ -79,9 +79,9 @@ uint8_t const *tud_descriptor_device_cb(void)
 }
 
 /*--------------------------------------------------------------------+
- * 配置描述符（AC + AS 两个音频接口，打开 ENABLE_HID_DEMO 时再加一个 HID）
+ * 配置描述符（AC + AS 两个音频接口，打开 ENABLE_AUDIO_STATUS_HID 时再加一个 HID）
  *--------------------------------------------------------------------*/
-/* 配置描述符总长度与接口数量跟着 ENABLE_HID_DEMO 走：
+/* 配置描述符总长度与接口数量跟着 ENABLE_AUDIO_STATUS_HID 走：
  *   纯音频   110 字节 / 2 个接口（AC + AS）
  *   音频+HID 142 字节 / 3 个接口
  *     = 110 + 接口 9 + HID 描述符 9 + 中断 IN 端点 7 + 中断 OUT 端点 7
@@ -90,8 +90,13 @@ uint8_t const *tud_descriptor_device_cb(void)
 #if ENABLE_USB_CDC
   #define CONFIG_TOTAL_LEN   67
   #define CONFIG_NUM_ITF     2
-#elif ENABLE_HID_DEMO
-  #define CONFIG_TOTAL_LEN   142
+#elif ENABLE_AUDIO_STATUS_HID && ENABLE_USB_MIC
+  /* 184B 音频 + 9B 接口 + 9B HID + 7B 中断 IN = 209B，4 个接口 */
+  #define CONFIG_TOTAL_LEN   209
+  #define CONFIG_NUM_ITF     4
+#elif ENABLE_AUDIO_STATUS_HID
+  /* 110B 音频 + 25B IN-only HID = 135B，3 个接口 */
+  #define CONFIG_TOTAL_LEN   135
   #define CONFIG_NUM_ITF     3
 #elif ENABLE_USB_MIC
   /* 扬声器 + 麦克风：184 字节 / 3 个接口
@@ -317,15 +322,10 @@ static uint8_t const desc_configuration[] =
     0x07, 0x25, 0x01, 0x00, 0x00, 0x00, 0x00,
 #endif
 
-#if ENABLE_HID_DEMO
-    /* ---------------- HID 接口描述符（9 字节） ----------------
-     * bInterfaceNumber = 2（对应 ITF_NUM_HID）
-     * bNumEndpoints = 2（中断 IN + 中断 OUT）
-     * bInterfaceClass = 0x03（HID）
-     * bInterfaceSubClass = 0x00（不支持引导协议，走报告描述符）
-     * bInterfaceProtocol = 0x00（不是键盘也不是鼠标）
-     * iInterface = 0（没有接口名字符串） */
-    0x09, 0x04, 0x02, 0x00, 0x02, 0x03, 0x00, 0x00, 0x00,
+#if ENABLE_AUDIO_STATUS_HID
+    /* ---------------- 声卡状态 HID 接口（9 字节） ----------------
+     * 接口号由宏确定：启用麦克风时为 3；只有一个中断 IN 端点。 */
+    0x09, 0x04, ITF_NUM_HID, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00,
 
     /* ---------------- HID 描述符（9 字节） ----------------
      * bcdHID = 0x0111（HID 1.11）
@@ -336,23 +336,12 @@ static uint8_t const desc_configuration[] =
      * 注意：报告描述符本体不能塞进配置描述符里，主机枚举时会
      *       单独发 GET_DESCRIPTOR(0x22) 来取，这里只告诉它有多长。 */
     0x09, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22,
-    (uint8_t)(HID_REPORT_DESC_LEN & 0xFF), (uint8_t)(HID_REPORT_DESC_LEN >> 8),
+    (uint8_t)(AUDIO_STATUS_REPORT_DESC_LEN & 0xFF),
+    (uint8_t)(AUDIO_STATUS_REPORT_DESC_LEN >> 8),
 
     /* ---------------- HID 中断 IN 端点（7 字节） ----------------
-     * bEndpointAddress = 0x82（端点 2，IN 方向）
-     * bmAttributes = 0x03（中断传输）—— 不是 0x09，0x09 是音频用的等时
-     * wMaxPacketSize = 0x0040 = 64 字节
-     * bInterval = 1（全速下每 1ms 一次）
-     * 这是设备 -> 主机方向，固件回传报告走这里。 */
-    0x07, 0x05, EPNUM_HID_IN, 0x03, 0x40, 0x00, 0x01,
-
-    /* ---------------- HID 中断 OUT 端点（7 字节） ----------------
-     * bEndpointAddress = 0x02（端点 2，OUT 方向）
-     * 这是主机 -> 设备方向，网页点 Send 时数据走这里，
-     * 最终进 tud_hid_set_report_cb 的 buffer 参数。
-     * Windows 的 HID 栈只认中断 OUT 端点来发输出报告，
-     * 少了这一段，网页在 Windows 上会报"发送失败"。 */
-    0x07, 0x05, EPNUM_HID_OUT, 0x03, 0x40, 0x00, 0x01,
+     * EP3 IN，固定 8 字节报告，1ms 轮询；没有 OUT，也不使用 Report ID。 */
+    0x07, 0x05, EPNUM_HID_IN, 0x03, AUDIO_STATUS_REPORT_LEN, 0x00, 0x01,
 #endif
 #endif  /* !ENABLE_USB_CDC */
 };

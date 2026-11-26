@@ -9,7 +9,8 @@ extern "C" {
  * TinyUSB 配置：STM32F103RC + UAC 1.0 扬声器/麦克风
  * ----------------------------------------------------------------------------
  * 正式版本只枚举音频功能：48kHz/16bit/立体声播放，16kHz/16bit/单声道录音。
- * CDC 与 HID 调试接口默认关闭，避免额外端点挤占 STM32F1 的 512 字节 PMA。
+ * CDC 调试接口关闭；新增 IN-only 厂商 HID 回传 A/B 与板载音量状态。
+ * 状态接口使用 EP3，不占用麦克风 EP2，也不影响标准 UAC 驱动。
  * ========================================================================== */
 
 /* 目标 MCU 与 USB FS Device 控制器 */
@@ -38,9 +39,9 @@ extern "C" {
 /* 麦克风开关：1 = 扬声器 + 麦克风，0 = 仅扬声器 */
 #define ENABLE_USB_MIC              1
 
-/* HID 调试接口：正式版本关闭，不为音频设备增加额外端点 */
-#define ENABLE_HID_DEMO             0
-#define CFG_TUD_HID                 ENABLE_HID_DEMO
+/* 声卡状态 HID：1 = 启用，只有 8 字节输入报告，无输出端点 */
+#define ENABLE_AUDIO_STATUS_HID     1
+#define CFG_TUD_HID                 ENABLE_AUDIO_STATUS_HID
 #define CFG_TUD_HID_EP_BUFSIZE      64
 
 /* 一路 UAC 1.0 音频功能，播放方向始终开启，录音方向由麦克风开关决定 */

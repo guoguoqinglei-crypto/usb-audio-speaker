@@ -705,6 +705,16 @@
               <FilePath>.\hardware\I2C.h</FilePath>
             </File>
             <File>
+              <FileName>key.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\hardware\key.c</FilePath>
+            </File>
+            <File>
+              <FileName>key.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\hardware\key.h</FilePath>
+            </File>
+            <File>
               <FileName>i2s.c</FileName>
               <FileType>1</FileType>
               <FilePath>.\hardware\i2s.c</FilePath>
@@ -773,6 +783,11 @@
               <FileName>audio_device.c</FileName>
               <FileType>1</FileType>
               <FilePath>.\hardware\TinyUSB\tinyusb\src\class\audio\audio_device.c</FilePath>
+            </File>
+            <File>
+              <FileName>hid_device.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\hardware\TinyUSB\tinyusb\src\class\hid\hid_device.c</FilePath>
             </File>
             <File>
               <FileName>dcd_stm32_fsdev.c</FileName>

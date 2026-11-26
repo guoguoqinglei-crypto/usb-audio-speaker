@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#include <tusb_config.h>    /* 需要 ENABLE_HID_DEMO 决定接口数量 */
+#include <tusb_config.h>    /* 需要 ENABLE_AUDIO_STATUS_HID 决定接口数量 */
 
 /* ============================================================================
  * USB 音频扬声器 —— 接口与端点编号
@@ -18,8 +18,9 @@
  *   alt 1：开流状态，1 个等时 OUT 端点，主机开始每 1ms 送 192 字节
  * 这是 USB 音频类的标准做法，Windows 也是靠切换 alt 来启停播放的。
  *
- * 打开 ENABLE_HID_DEMO 时再多一个 Interface 2（HID 调试接口），
- * 用来在网页上给板子发报告、板子原样回传，验证协议栈通了。
+ * 打开 ENABLE_AUDIO_STATUS_HID 时增加厂商 HID 状态接口：
+ * 无麦克风时是 Interface 2；启用麦克风时是 Interface 3。
+ * 它只回传 A/B 按键、板载音量、序号和 UAC 静音，不代替标准音频控制。
  * ========================================================================== */
 
 enum
@@ -29,8 +30,8 @@ enum
 #if ENABLE_USB_MIC
     ITF_NUM_AUDIO_MIC,              /* 麦克风流接口（有 alt 0 / alt 1） */
 #endif
-#if ENABLE_HID_DEMO
-    ITF_NUM_HID,                    /* HID 调试接口（仅验证用） */
+#if ENABLE_AUDIO_STATUS_HID
+    ITF_NUM_HID,                    /* 声卡状态 HID：A/B + 板载音量 */
 #endif
     ITF_NUM_TOTAL
 };
@@ -40,18 +41,12 @@ enum
 #define EPNUM_AUDIO_OUT     0x01
 #define EPNUM_AUDIO_IN      0x82   /* 麦克风：等时 IN，端点 2 */
 
-/* HID 中断端点：IN 0x82、OUT 0x02。
- * 为什么两个方向都要有：
- *   Windows 的 HID 栈发输出报告时走的是"中断 OUT 端点"（WriteFile），
- *   只声明 IN 端点的话，网页点 Send 在 Windows 上会直接失败。
- *   两个端点各 64 字节，正好把 PMA 用满（64+128+192+64+64 = 512）。
- * 端点号用 2，不与音频的 EP1 冲突。 */
-/* ⚠ HID 调试接口和麦克风都用端点 2/接口 2，不能同时打开 */
-#if ENABLE_HID_DEMO && ENABLE_USB_MIC
-#error "ENABLE_HID_DEMO 与 ENABLE_USB_MIC 不能同时为 1（接口号与端点号冲突）"
+/* HID 仅使用 EP3 IN；EP2 已分配给麦克风，不能再复用。
+ * 报告无 Report ID，固定 8 字节报告体，主机只读不写。 */
+#if ENABLE_AUDIO_STATUS_HID
+#define EPNUM_HID_IN                0x83
+#define AUDIO_STATUS_REPORT_LEN     8U
+#define AUDIO_STATUS_REPORT_DESC_LEN 21U
 #endif
-
-#define EPNUM_HID_IN        0x82
-#define EPNUM_HID_OUT       0x02
 
 #endif /* USB_DESCRIPTORS_H_ */

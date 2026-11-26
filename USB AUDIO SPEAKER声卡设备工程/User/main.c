@@ -10,6 +10,7 @@
 #include <delay.h>          /* 微秒/毫秒延时（已改为 TIM7，不再占用 SysTick） */
 #include <I2C.h>            /* 软件 I²C 与 NAU8822 驱动 */
 #include <i2s.h>            /* I²S2 初始化与 DMA 播放 */
+#include <key.h>            /* A/B 独立状态机与板载 Codec 音量 */
 #include <tusb_config.h>    /* ENABLE_USB_MIC：要不要初始化录音通路 */
 
 #if ENABLE_USB_MIC
@@ -20,10 +21,9 @@
  * 一、参数
  * ========================================================================== */
 
-/* Codec 固定增益（0~100 映射到寄存器 0x00~0x3F）。
- * 音量调节现在由 Windows 在软件层做，这里只决定"最大能多响"：
- *   80 -> 寄存器 0x32 ≈ -7 dB（偏小）
- *   90 -> 寄存器 0x38 ≈ -1 dB（接近满输出，留一点余量防削顶） */
+/* 板载 Codec 初始音量（0~100 映射到寄存器 0x00~0x3F）。
+ * 上电为 90；A 键每次 +1，B 键每次 -1，范围限制在 0~100。
+ * Windows 软件音量与这个板载增益相互独立，最终音量由两级共同决定。 */
 #define AUDIO_VOLUME        90
 
 #define UART_BAUD_RATE      921600
@@ -37,7 +37,7 @@
  * 二、FreeRTOS 任务定义
  * ----------------------------------------------------------------------------
  * USB_TASK  优先级 3：每 1ms 推进 TinyUSB 协议栈并搬运音频数据。
- * MUTE_TASK 优先级 1：每 2ms 执行句间软静音，降低切换爆音与底噪。
+ * MUTE_TASK 优先级 1：每 2ms 执行句间软静音，并每 10ms 扫描 A/B 音量键。
  * DIAG_TASK 优先级 1：每 5 秒输出缓冲区、欠载、溢出与堆余量统计。
  *
  * 播放数据由 I2S2 DMA 半传输/完成中断搬运，录音数据由 I2S3 DMA 接收；
@@ -105,12 +105,22 @@ static void vDiagTask(void *pvParameters)
 static void vMuteTask(void *pvParameters)
 {
     TickType_t lastWake = xTaskGetTickCount();
+    uint8_t keyDivider = 0u;
 
     (void)pvParameters;
 
     for (;;)
     {
         I2S2_SilenceMuteService();
+
+        /* 2ms × 5 = 10ms；状态机连续确认 2 次即为 20ms 消抖。
+         * 与软静音串行访问软件 I2C，不能移到 USB 回调或中断中。 */
+        keyDivider++;
+        if (keyDivider >= 5u)
+        {
+            keyDivider = 0u;
+            AudioKeys_Task();
+        }
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(MUTE_PERIOD_MS));
     }
 }
@@ -210,8 +220,9 @@ int main(void)
          * 音频接口格式 16bit/标准 I²S、从机时钟、DAC 与耳机通路） */
         NAU8822_Init();
 
-        /* 第 5 步：设置耳机输出音量 */
+        /* 第 5 步：设置初始音量并启动 A=+1 / B=-1 的独立按键状态机 */
         NAU8822_SetVolume(AUDIO_VOLUME);
+        AudioKeys_Init(AUDIO_VOLUME);
 
         /* 第 6 步：初始化 I²S2（主发送、Philips、16 位、46.875kHz） */
         I2S2_Init();
